@@ -157,7 +157,7 @@ else:
     st.metric(
         "Nilai tabungan sekarang (perkiraan)",
         rp(h["nilai"]),
-        f"{rp(h['untung'])} ({h['persen']:+.2f}%)",
+                f"{'-' if h['untung'] < 0 else '+'}{rp(abs(h['untung']))} ({h['persen']:+.2f}%)",
     )
     st.caption(
         "Ini untung/rugi di atas kertas. Kalau kamu menjual di Dana, harga jualnya lebih rendah dari harga beli "
