@@ -11,11 +11,16 @@ OZ_GRAM = 31.1035
 CICILAN = 150_000
 WINDOW = 90
 MURAH, MAHAL = 0.33, 0.67
-FAKTOR_JUAL = 0.978  # perkiraan: harga jual Dana sekitar 97,8% dari harga di web
+FAKTOR_JUAL = 0.978   # perkiraan: harga jual Dana = 97,8% dari harga di web
+FAKTOR_BELI = 1.0125  # perkiraan: harga beli Dana = 101,25% dari harga di web
 
 
 def rp(x):
     return f"Rp{x:,.0f}".replace(",", ".")
+
+
+def tanda(x):
+    return ("-" if x < 0 else "+") + rp(abs(x))
 
 
 @st.cache_data(ttl=300)
@@ -88,11 +93,31 @@ def hitung_tabungan(d, tabel, harga_jual_dana=0.0):
     }
 
 
+def simulasi_setor(h, setor, harga_beli_dana=0.0):
+    manual = bool(harga_beli_dana and harga_beli_dana > 0)
+    harga_beli = harga_beli_dana if manual else h["harga_kini"] * FAKTOR_BELI
+    gram_tambah = setor / harga_beli
+    gram = h["gram"] + gram_tambah
+    modal = h["modal"] + setor
+    nilai = gram * h["harga_jual"]
+    return {
+        "harga_beli": harga_beli,
+        "manual": manual,
+        "gram_tambah": gram_tambah,
+        "gram": gram,
+        "modal": modal,
+        "rata": modal / gram,
+        "nilai": nilai,
+        "untung": nilai - modal,
+        "persen": (nilai - modal) / modal * 100,
+    }
+
+
 def label(p):
     if p <= MURAH:
-        return "🟢 MURAH", "Harga di bagian bawah 3 bulan terakhir. Waktu yang cukup bagus untuk beli."
+        return "🟢 MURAH", "Harga sedang di bagian bawah 3 bulan terakhir. Waktu yang cukup bagus untuk beli."
     if p >= MAHAL:
-        return "🔴 MAHAL", "Harga di bagian atas 3 bulan terakhir. Kalau belum mendesak, tunggu dulu."
+        return "🔴 MAHAL", "Harga sedang di bagian atas 3 bulan terakhir. Kalau belum mendesak, tunggu dulu."
     return "🟡 BIASA", "Harga di sekitar rata-rata 3 bulan terakhir. Beli sesuai jadwal tidak masalah."
 
 
@@ -110,29 +135,16 @@ hari_ini = d.iloc[-1]
 judul, saran = label(hari_ini["posisi"])
 st.subheader(judul)
 st.write(saran)
-c1, c2 = st.columns(2)
-c1.metric("Harga perkiraan per gram", rp(hari_ini["rp_gram"]))
-c2.metric("Posisi vs 90 hari", f"{hari_ini['posisi']*100:.0f}%", help="0% = termurah, 100% = termahal")
-st.caption(f"Data terakhir: {d.index[-1].date()}. Harga ini turunan dari XAU/USD x kurs, jadi bisa beda dengan harga di Dana (ada selisih jual-beli).")
-
-grafik = d[["rp_gram", "MA30", "MA90"]].tail(180).reset_index()
-grafik.columns = ["tanggal", "rp_gram", "MA30", "MA90"]
-panjang = grafik.melt("tanggal", var_name="garis", value_name="harga")
-st.altair_chart(
-    alt.Chart(panjang).mark_line().encode(
-        x=alt.X("tanggal:T", title=None),
-        y=alt.Y("harga:Q", scale=alt.Scale(zero=False), title="Rp per gram"),
-        color=alt.Color("garis:N", title=None),
-    ),
-    use_container_width=True,
+st.caption(
+    f"Harga emas sekarang sekitar {rp(hari_ini['rp_gram'])} per gram (data {d.index[-1].date()}). "
+    "Angka ini perkiraan dari harga emas dunia, jadi bisa sedikit beda dengan harga di Dana."
 )
 
 # ---------------- tabungan pribadi ----------------
 st.header("Tabungan saya")
 st.caption(
-    "Isi pembelianmu di tabel (tap sel untuk mengubah, tambah baris di bawah tabel). "
-    "Data hanya ada di layar ini dan hilang kalau halaman di-refresh. "
-    "Untuk hasil lebih akurat, isi kolom Gram sesuai riwayat di Dana."
+    "Isi data pembelianmu dari aplikasi Dana. Yang paling penting: kolom Nominal dan kolom Gram "
+    "(geser tabel ke kanan kalau kolom Gram tidak kelihatan). Data hilang kalau halaman di-refresh."
 )
 awal = pd.DataFrame({
     "Tanggal": [date.today() - timedelta(days=60), date.today() - timedelta(days=30)],
@@ -151,51 +163,94 @@ tabel = st.data_editor(
     },
 )
 hj = st.number_input(
-    "Harga jual Dana sekarang, Rp per gram (opsional)",
+    "Harga jual per gram di Dana (opsional)",
     min_value=0.0, value=0.0, step=1000.0,
-    help="Lihat di aplikasi Dana: tulisan 'Harga Jual Terbaru'. Kalau dikosongkan, web memakai perkiraan.",
+    help="Di aplikasi Dana, lihat tulisan 'Harga Jual Terbaru'. Kalau dikosongkan, web memakai perkiraan.",
 )
 h = hitung_tabungan(d, tabel, hj)
 if h is None:
     st.info("Isi minimal satu baris pembelian.")
 else:
+    if h["untung"] < 0:
+        st.info(
+            f"**Ringkasnya:** kamu sudah setor **{rp(h['modal'])}** dan punya **{h['gram']:.4f} gram** emas. "
+            f"Kalau dijual sekarang di Dana kamu dapat sekitar **{rp(h['nilai'])}**, jadi rugi sementara "
+            f"**{rp(abs(h['untung']))}** ({abs(h['persen']):.1f}%). Ini belum rugi sungguhan karena belum dijual. "
+            "Sebagian karena selisih harga beli dan jual di Dana, sebagian karena harga emas turun sejak kamu beli."
+        )
+    else:
+        st.info(
+            f"**Ringkasnya:** kamu sudah setor **{rp(h['modal'])}** dan punya **{h['gram']:.4f} gram** emas. "
+            f"Kalau dijual sekarang di Dana kamu dapat sekitar **{rp(h['nilai'])}**, jadi untung sementara "
+            f"**{rp(h['untung'])}** ({h['persen']:.1f}%)."
+        )
     a, b = st.columns(2)
-    a.metric("Total modal", rp(h["modal"]))
-    b.metric("Total emas", f"{h['gram']:.4f} g")
-    a.metric("Rata-rata harga belimu", rp(h["rata"]) + "/g")
-    b.metric("Harga jual (dipakai)", rp(h["harga_jual"]) + "/g")
-    st.metric(
-        "Nilai tabungan sekarang (perkiraan)",
-        rp(h["nilai"]),
-        f"{'-' if h['untung'] < 0 else '+'}{rp(abs(h['untung']))} ({h['persen']:+.2f}%)",
-    )
-    st.caption(
-        ("Nilai dihitung dengan harga jual Dana yang kamu isi, seperti di aplikasi Dana. "
-         if h["manual"] else
-         "Nilai dihitung dengan perkiraan harga jual (sekitar 97,8% dari harga di web). "
-         "Isi kolom harga jual Dana supaya persis sama dengan aplikasi. ")
-        + "Ini untung/rugi di atas kertas, belum rugi nyata kalau belum dijual. Kalau harga turun, "
-        "cicilan bulan depan dapat lebih banyak gram, dan rata-rata harga belimu ikut turun."
-    )
-    st.subheader("Kalau harga berubah")
-    skenario = pd.DataFrame({
-        "Perubahan harga": ["-10%", "-5%", "Tetap", "+5%", "+10%"],
-        "Nilai tabungan": [rp(h["nilai"] * (1 + p)) for p in (-0.1, -0.05, 0, 0.05, 0.1)],
-        "Untung/rugi": [rp(h["nilai"] * (1 + p) - h["modal"]) for p in (-0.1, -0.05, 0, 0.05, 0.1)],
-    })
-    st.table(skenario)
-    st.caption("Ini hanya simulasi 'bagaimana kalau', bukan prediksi.")
+    a.metric("Uang yang sudah disetor", rp(h["modal"]))
+    b.metric("Emas yang dimiliki", f"{h['gram']:.4f} g")
+    a.metric("Harga rata-rata belimu per gram", rp(h["rata"]))
+    b.metric("Harga jual per gram (Dana)", rp(h["harga_jual"]))
+    st.metric("Kalau dijual sekarang dapat", rp(h["nilai"]), f"{tanda(h['untung'])} ({h['persen']:+.2f}%)")
+    if not h["manual"]:
+        st.caption("Harga jual di atas masih perkiraan. Isi kolom harga jual dari aplikasi Dana supaya persis.")
 
-# ---------------- uji historis ----------------
-st.header("Uji pada data masa lalu")
-bt, rata_biasa, rata_pintar = uji_historis(d)
-selisih = (rata_biasa - rata_pintar) / rata_biasa * 100
-st.write(f"Simulasi {len(bt)} bulan terakhir dengan {rp(CICILAN)}/bulan:")
-c3, c4 = st.columns(2)
-c3.metric("Beli tiap tanggal 1", rp(rata_biasa) + "/g")
-c4.metric("Beli saat 'murah'", rp(rata_pintar) + "/g", f"{selisih:+.2f}% dibanding tgl 1")
-st.caption(
-    "Tanda plus = lebih murah dari beli tiap tanggal 1, tanda minus = lebih mahal. "
-    "Selisih kecil atau negatif itu wajar: timing bulanan hanya membantu sedikit, "
-    "dan yang paling penting tetap konsisten menabung."
-)
+    # ---------------- simulasi setor ----------------
+    st.header("Kalau setor lagi")
+    st.caption("Coba berapa pun setoran berikutnya, lihat pengaruhnya ke tabunganmu. Ini hanya simulasi.")
+    setor = st.number_input("Mau setor berapa (Rp)", min_value=0.0, value=150000.0, step=10000.0)
+    hb = st.number_input(
+        "Harga beli per gram di Dana (opsional)",
+        min_value=0.0, value=0.0, step=1000.0,
+        help="Di aplikasi Dana, lihat tulisan 'Harga Beli Terbaru'. Kalau dikosongkan, web memakai perkiraan.",
+    )
+    if setor > 0:
+        s = simulasi_setor(h, setor, hb)
+        st.metric("Emas bertambah", f"+{s['gram_tambah']:.4f} g")
+        st.metric("Total emas jadi", f"{s['gram']:.4f} g")
+        st.metric(
+            "Harga rata-rata belimu jadi",
+            rp(s["rata"]),
+            tanda(s["rata"] - h["rata"]),
+            delta_color="inverse",
+            help="Semakin rendah semakin baik. Kalau harga sedang turun, setor lagi akan menurunkan rata-rata belimu.",
+        )
+        st.metric("Kalau dijual sekarang dapat", rp(s["nilai"]), f"{tanda(s['untung'])} ({s['persen']:+.2f}%)")
+        st.caption(
+            "Setiap setoran baru langsung terlihat 'rugi' sekitar 3-4% karena selisih harga beli dan jual di Dana. "
+            "Itu normal, dan hilang kalau harga emas naik lebih dari selisih itu."
+        )
+
+# ---------------- bagian untuk yang penasaran ----------------
+with st.expander("📈 Grafik harga 6 bulan terakhir"):
+    grafik = d[["rp_gram", "MA30", "MA90"]].tail(180).reset_index()
+    grafik.columns = ["tanggal", "rp_gram", "MA30", "MA90"]
+    panjang = grafik.melt("tanggal", var_name="garis", value_name="harga")
+    st.altair_chart(
+        alt.Chart(panjang).mark_line().encode(
+            x=alt.X("tanggal:T", title=None),
+            y=alt.Y("harga:Q", scale=alt.Scale(zero=False), title="Rp per gram"),
+            color=alt.Color("garis:N", title=None),
+        ),
+        use_container_width=True,
+    )
+    st.caption("rp_gram = harga harian. MA30 dan MA90 = rata-rata 30 dan 90 hari terakhir.")
+
+if h is not None:
+    with st.expander("🔮 Kalau harga emas berubah"):
+        skenario = pd.DataFrame({
+            "Perubahan harga": ["-10%", "-5%", "Tetap", "+5%", "+10%"],
+            "Nilai tabungan": [rp(h["nilai"] * (1 + p)) for p in (-0.1, -0.05, 0, 0.05, 0.1)],
+            "Untung/rugi": [tanda(h["nilai"] * (1 + p) - h["modal"]) for p in (-0.1, -0.05, 0, 0.05, 0.1)],
+        })
+        st.table(skenario)
+        st.caption("Hanya simulasi 'bagaimana kalau', bukan prediksi.")
+
+with st.expander("🧪 Apakah menunggu harga murah menguntungkan?"):
+    bt, rata_biasa, rata_pintar = uji_historis(d)
+    selisih = (rata_biasa - rata_pintar) / rata_biasa * 100
+    st.write(f"Simulasi {len(bt)} bulan terakhir dengan {rp(CICILAN)} per bulan:")
+    st.metric("Beli tiap tanggal 1", rp(rata_biasa) + "/g")
+    st.metric("Beli saat lampu hijau", rp(rata_pintar) + "/g", f"{selisih:+.2f}% dibanding tgl 1")
+    st.caption(
+        "Plus = lebih murah dari beli tiap tanggal 1, minus = lebih mahal. "
+        "Selisihnya kecil, jadi yang paling penting tetap konsisten menabung."
+    )
