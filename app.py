@@ -11,6 +11,7 @@ OZ_GRAM = 31.1035
 CICILAN = 150_000
 WINDOW = 90
 MURAH, MAHAL = 0.33, 0.67
+FAKTOR_JUAL = 0.978  # perkiraan: harga jual Dana sekitar 97,8% dari harga di web
 
 
 def rp(x):
@@ -56,7 +57,7 @@ def harga_pada(d, tgl):
     return s.iloc[-1] if len(s) else d["rp_gram"].iloc[0]
 
 
-def hitung_tabungan(d, tabel):
+def hitung_tabungan(d, tabel, harga_jual_dana=0.0):
     t = tabel.dropna(subset=["Tanggal", "Nominal (Rp)"]).copy()
     t = t[t["Nominal (Rp)"] > 0]
     if t.empty:
@@ -71,12 +72,16 @@ def hitung_tabungan(d, tabel):
     modal = float(t["Nominal (Rp)"].sum())
     total_gram = sum(gram)
     harga_kini = d["rp_gram"].iloc[-1]
-    nilai = total_gram * harga_kini
+    dipakai_manual = bool(harga_jual_dana and harga_jual_dana > 0)
+    harga_jual = harga_jual_dana if dipakai_manual else harga_kini * FAKTOR_JUAL
+    nilai = total_gram * harga_jual
     return {
         "modal": modal,
         "gram": total_gram,
         "rata": modal / total_gram,
         "harga_kini": harga_kini,
+        "harga_jual": harga_jual,
+        "manual": dipakai_manual,
         "nilai": nilai,
         "untung": nilai - modal,
         "persen": (nilai - modal) / modal * 100,
@@ -145,7 +150,12 @@ tabel = st.data_editor(
         "Gram (opsional)": st.column_config.NumberColumn("Gram (opsional)", min_value=0.0, format="%.4f"),
     },
 )
-h = hitung_tabungan(d, tabel)
+hj = st.number_input(
+    "Harga jual Dana sekarang, Rp per gram (opsional)",
+    min_value=0.0, value=0.0, step=1000.0,
+    help="Lihat di aplikasi Dana: tulisan 'Harga Jual Terbaru'. Kalau dikosongkan, web memakai perkiraan.",
+)
+h = hitung_tabungan(d, tabel, hj)
 if h is None:
     st.info("Isi minimal satu baris pembelian.")
 else:
@@ -153,16 +163,19 @@ else:
     a.metric("Total modal", rp(h["modal"]))
     b.metric("Total emas", f"{h['gram']:.4f} g")
     a.metric("Rata-rata harga belimu", rp(h["rata"]) + "/g")
-    b.metric("Harga sekarang", rp(h["harga_kini"]) + "/g")
+    b.metric("Harga jual (dipakai)", rp(h["harga_jual"]) + "/g")
     st.metric(
         "Nilai tabungan sekarang (perkiraan)",
         rp(h["nilai"]),
-                f"{'-' if h['untung'] < 0 else '+'}{rp(abs(h['untung']))} ({h['persen']:+.2f}%)",
+        f"{'-' if h['untung'] < 0 else '+'}{rp(abs(h['untung']))} ({h['persen']:+.2f}%)",
     )
     st.caption(
-        "Ini untung/rugi di atas kertas. Kalau kamu menjual di Dana, harga jualnya lebih rendah dari harga beli "
-        "(ada selisih), jadi angka nyata bisa lebih kecil. Kalau harga turun, cicilan bulan depan dapat lebih "
-        "banyak gram, dan rata-rata harga belimu ikut turun."
+        ("Nilai dihitung dengan harga jual Dana yang kamu isi, seperti di aplikasi Dana. "
+         if h["manual"] else
+         "Nilai dihitung dengan perkiraan harga jual (sekitar 97,8% dari harga di web). "
+         "Isi kolom harga jual Dana supaya persis sama dengan aplikasi. ")
+        + "Ini untung/rugi di atas kertas, belum rugi nyata kalau belum dijual. Kalau harga turun, "
+        "cicilan bulan depan dapat lebih banyak gram, dan rata-rata harga belimu ikut turun."
     )
     st.subheader("Kalau harga berubah")
     skenario = pd.DataFrame({
